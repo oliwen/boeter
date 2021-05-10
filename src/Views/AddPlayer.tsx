@@ -1,31 +1,24 @@
 import * as React from "react";
-import { Form, Button } from "semantic-ui-react";
-import { Formik, FormikProps } from "formik";
-import { FormField } from "../components/FormField";
 import { db } from "../firebaseSetup";
+import { Form, Input, Button } from "antd";
+import { useForm } from "antd/lib/form/Form";
 
 export const AddPlayer: React.FC = () => {
+  const [form] = useForm();
+
+  const onFinish = async (values: Backend.Player) => {
+    await db.collection("players").add(values);
+    form.resetFields();
+  };
+
   return (
     <div>
-      <Formik
-        initialValues={{
-          name: "",
-        }}
-        onSubmit={async (values, formik) => {
-          await db.collection("players").add(values);
-          formik.resetForm();
-          formik.setSubmitting(false);
-        }}
-      >
-        {(props: FormikProps<any>) => (
-          <Form onSubmit={props.submitForm} loading={props.isSubmitting}>
-            <FormField name="name" label="Namn" />
-            <Button primary fluid size="big">
-              SPARA SPELARE
-            </Button>
-          </Form>
-        )}
-      </Formik>
+      <Form form={form} onFinish={onFinish}>
+        <Form.Item name="name" label="Namn">
+          <Input />
+        </Form.Item>
+        <Button htmlType="submit">SPARA SPELARE</Button>
+      </Form>
     </div>
   );
 };

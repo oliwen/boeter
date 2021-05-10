@@ -1,8 +1,11 @@
 import { decorate, observable, action, computed } from "mobx";
+import firebase from "firebase/app";
 
 export type WithId<T> = T & { id: string; key: string };
 
 export class StoreItem<T> {
+  public error?: Error;
+
   constructor(
     protected parentStore: Store<T>,
     public docRef: firebase.firestore.DocumentReference,
@@ -18,18 +21,25 @@ export class StoreItem<T> {
       const doc = await this.docRef.get();
       this.handleUpdate(doc);
     } else {
-      this.docRef.onSnapshot(this.handleUpdate);
+      this.docRef.onSnapshot(this.handleUpdate, (error) =>
+        console.error("onDocSnapshot", error)
+      );
     }
   };
 
   handleUpdate = async (
     documentSnapshot: firebase.firestore.DocumentSnapshot
   ) => {
-    this.data = {
-      ...(documentSnapshot.data() as T),
-      key: documentSnapshot.id,
-      id: documentSnapshot.id,
-    };
+    if (documentSnapshot.exists) {
+      this.data = {
+        ...(documentSnapshot.data() as T),
+        key: documentSnapshot.id,
+        id: documentSnapshot.id,
+      };
+    } else {
+      this.data = undefined;
+      this.error = new Error("NOT_FOUND");
+    }
     this.setLoading(false);
   };
 
@@ -54,12 +64,18 @@ export class StoreItems<T> {
       const data = await this.query.get();
       this.handleDataUpdate(data);
     } else {
-      this.query.onSnapshot(this.handleDataUpdate);
+      this.query.onSnapshot(this.handleDataUpdate, (error) =>
+        console.error("onCollectionSnapshot", error)
+      );
     }
   };
 
   handleDataUpdate = (querySnapshot: firebase.firestore.QuerySnapshot) => {
-    this.data = (querySnapshot?.docs || []).map((documentSnapshot) => {
+    if (!querySnapshot?.docs) {
+      return;
+    }
+
+    this.data = querySnapshot.docs.map((documentSnapshot) => {
       const item = this.parentStore.items.get(documentSnapshot.id);
       if (item) {
         item.data = {
@@ -78,9 +94,7 @@ export class StoreItems<T> {
         );
       }
 
-      return this.parentStore.items.get(documentSnapshot.id) as StoreItem<
-        WithId<T>
-      >;
+      return this.parentStore.items.get(documentSnapshot.id) as StoreItem<T>;
     });
 
     this.setLoading(false);
@@ -100,9 +114,79 @@ interface Options {
   once?: boolean;
 }
 
-export class Store<T> {
+export class Store<T extends firebase.firestore.DocumentData> {
   queries = observable.map<string, StoreItems<T>>();
   items = observable.map<string, StoreItem<T>>();
+
+  constructor(public collection: firebase.firestore.CollectionReference) {}
+
+  doc(id: string) {
+    return this.collection.doc(id);
+  }
+
+  withCollection<T2>(
+    func: (collection: firebase.firestore.CollectionReference) => T2
+  ) {
+    return func(this.collection);
+  }
+
+  set(
+    id: string,
+    data: Partial<T>,
+    parentRef?: firebase.firestore.DocumentReference
+  ) {
+    if (parentRef) {
+      return parentRef
+        .collection(this.collection.path)
+        .doc(id)
+        .set(data, { merge: true });
+    }
+
+    return this.collection.doc(id).set(data, { merge: true });
+  }
+
+  add(data: T, parentRef?: firebase.firestore.DocumentReference) {
+    if (parentRef) {
+      return parentRef.collection(this.collection.path).add(data);
+    }
+
+    return this.collection.add(data);
+  }
+
+  update(
+    id: string,
+    data: T,
+    parentRef?: firebase.firestore.DocumentReference
+  ) {
+    if (parentRef) {
+      return parentRef.collection(this.collection.path).doc(id).update(data);
+    }
+
+    return this.collection.doc(id).update(data);
+  }
+
+  addOrUpdate(
+    maybeId: string | undefined,
+    data: T,
+    parentRef?: firebase.firestore.DocumentReference
+  ) {
+    const id =
+      maybeId ||
+      (parentRef
+        ? parentRef.collection(this.collection.path)
+        : this.collection
+      ).doc().id;
+
+    return this.set(id, data, parentRef);
+  }
+
+  delete(id: string, parentRef?: firebase.firestore.DocumentReference) {
+    if (parentRef) {
+      return parentRef.collection(this.collection.path).doc(id).delete();
+    }
+
+    return this.collection.doc(id).delete();
+  }
 
   getCollection(
     key: string,
@@ -112,6 +196,7 @@ export class Store<T> {
     const cachedQueryKey = key + (options?.once ? "-once" : "");
 
     let cachedQuery = this.queries.get(cachedQueryKey);
+
     if (cachedQuery) {
       return cachedQuery;
     }
@@ -129,8 +214,9 @@ export class Store<T> {
   }
 
   getDocument(docRef: firebase.firestore.DocumentReference, options?: Options) {
-    const cachedItemKey = docRef.id + (options?.once ? "-once" : "");
+    const cachedItemKey = docRef.path + (options?.once ? "-once" : "");
     const cachedItem = this.items.get(cachedItemKey);
+
     if (cachedItem) {
       return cachedItem;
     }
@@ -149,9 +235,13 @@ export class Store<T> {
 
   useCollection(
     key: string,
-    query?: firebase.firestore.Query,
+    getQuery?: (
+      collection: firebase.firestore.CollectionReference
+    ) => firebase.firestore.Query | undefined,
     options?: Options
   ): { data: WithId<T>[]; loading: boolean; error: boolean; isReady: boolean } {
+    const query = getQuery ? getQuery(this.collection) : this.collection;
+
     if (!query || options?.skip) {
       return { data: [], loading: true, error: false, isReady: false };
     }
@@ -169,9 +259,12 @@ export class Store<T> {
   }
 
   useDocument(
-    docRef?: firebase.firestore.DocumentReference,
+    getDocRef: (
+      collection: firebase.firestore.CollectionReference
+    ) => firebase.firestore.DocumentReference | undefined,
     options?: Options
   ) {
+    const docRef = getDocRef(this.collection);
     if (!docRef || options?.skip) {
       return {
         data: undefined,
@@ -182,11 +275,7 @@ export class Store<T> {
 
     const storeItem = this.getDocument(docRef, options);
 
-    return {
-      data: storeItem.data,
-      loading: storeItem.loading,
-      isReady: storeItem.data && !storeItem.loading,
-    };
+    return storeItem;
   }
 }
 

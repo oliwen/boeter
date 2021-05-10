@@ -3,10 +3,19 @@ declare namespace Backend {
     name: string;
   }
 
+  interface EntryEntry {
+    typeRef: firebase.firestore.DocumentReference<Backend.Type>;
+    playerRef: firebase.firestore.DocumentReference<Backend.Player>;
+  }
+
   interface Entry {
-    typeRef: string;
-    playerRef: string;
-    date: Date;
+    entries: EntryEntry[];
+    date: firebase.firestore.Timestamp;
+  }
+
+  interface Category {
+    name: string;
+    ordinal: number;
   }
 
   interface Type {
